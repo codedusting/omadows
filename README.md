@@ -82,8 +82,9 @@ Omadows Settings).
 
 **Per-user settings**: dark mode and accent color, wallpaper slideshow, auto-hidden taskbar,
 hidden desktop icons, PowerToys (Command Palette on Win+Space, FancyZones off, start with
-Windows), komorebi, whkd and YASB autostart, script execution policy RemoteSigned for your
-user if it was unset.
+Windows), script execution policy RemoteSigned for your user if it was unset, and two sign-in
+tasks, `Omadows komorebi` and `Omadows YASB`, that start komorebi, whkd and the bar within
+seconds of signing in (Windows holds back ordinary startup apps until the desktop is idle).
 
 **Machine-wide** (the one administrator prompt): long path support, and a scheduled task
 `\Omadows\Theme colors` that runs as SYSTEM and applies the parts of a theme that need admin.

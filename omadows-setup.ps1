@@ -2423,13 +2423,11 @@ if ($colors['special']) {
 }
 '@
     [IO.File]::WriteAllText($helper, $code.Replace('__COLOR_FILE__', $ColorFile.Replace("'", "''")), (New-Object System.Text.UTF8Encoding $false))
-    Remove-Item (Join-Path $dir 'set-brave-theme.ps1') -ErrorAction SilentlyContinue
 
     $svc = New-Object -ComObject Schedule.Service
     $svc.Connect()
     $root = $svc.GetFolder('\')
     try { $folder = $root.GetFolder('Omadows') } catch { $folder = $root.CreateFolder('Omadows') }
-    try { $folder.DeleteTask('Brave theme', 0) } catch { }
     $def = $svc.NewTask(0)
     $def.RegistrationInfo.Description = 'Applies the current Omadows theme to Brave (BrowserThemeColor policy), the Explorer folder and known-folder icons, the Windhawk Resource Redirect icons and the Windhawk Explorer background mods.'
     $def.Settings.ExecutionTimeLimit = 'PT2M'
@@ -2753,21 +2751,48 @@ function Enable-TaskbarAutoHide {
     [void][Win32.Native]::SHAppBarMessage(0x0A, [ref]$abd)   # ABM_SETSTATE
 }
 
+# komorebi (with whkd) and YASB start from sign-in tasks: Windows holds back Startup-folder and
+# Run-key apps until the desktop has gone idle, which can take minutes; sign-in tasks start at once
+function Register-SignInTask([string]$Name, [string]$Exe, [string]$Arguments, [string]$Description) {
+    $user = "$env:USERDOMAIN\$env:USERNAME"
+    $svc = New-Object -ComObject Schedule.Service
+    $svc.Connect()
+    $def = $svc.NewTask(0)
+    $def.RegistrationInfo.Description = $Description
+    $def.Settings.ExecutionTimeLimit = 'PT0S'      # YASB keeps running; the default limit would end it after 3 days
+    $def.Settings.DisallowStartIfOnBatteries = $false
+    $def.Settings.StopIfGoingOnBatteries = $false
+    $def.Settings.MultipleInstances = 2            # don't start a second copy
+    $def.Settings.Priority = 4                     # normal; tasks default to below normal, which children inherit
+    $trigger = $def.Triggers.Create(9)             # at sign-in
+    $trigger.UserId = $user
+    $def.Principal.UserId = $user
+    $def.Principal.LogonType = 3                   # in the signed-in session, no stored password
+    $def.Principal.RunLevel = 0
+    $action = $def.Actions.Create(0)
+    $action.Path = $Exe
+    $action.Arguments = $Arguments
+    [void]$svc.GetFolder('\').RegisterTaskDefinition($Name, $def, 6, $null, $null, 3)
+}
+
 function Start-Desktop {
     Update-SessionPath
     $komorebic = Join-Path $env:ProgramFiles 'komorebi\bin\komorebic.exe'
-    $yasbc = Join-Path $env:ProgramFiles 'YASB\yasbc.exe'
+    $yasb = Join-Path $env:ProgramFiles 'YASB\yasb.exe'
+    # the slower autostart entries komorebi and YASB create for themselves
+    Remove-Item (Join-Path ([Environment]::GetFolderPath('Startup')) 'komorebi.lnk') -ErrorAction SilentlyContinue
+    Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'YASB' -ErrorAction SilentlyContinue
     if (Test-Path $komorebic) {
         if (Get-Process komorebi -ErrorAction SilentlyContinue) { [void](Invoke-Native $komorebic @('stop', '--whkd')); Start-Sleep -Seconds 2 }
-        [void](Invoke-Native $komorebic @('start', '--whkd'))
-        [void](Invoke-Native $komorebic @('enable-autostart', '--whkd'))
-        Write-Info 'komorebi + whkd running, autostart on'
+        Register-SignInTask 'Omadows komorebi' (Join-Path $env:ProgramFiles 'komorebi\bin\komorebic-no-console.exe') 'start --whkd' 'Starts komorebi and whkd when you sign in (Omadows)'
+        Start-ScheduledTask -TaskName 'Omadows komorebi'
+        Write-Info 'komorebi + whkd running, start at sign-in'
     }
-    if (Test-Path $yasbc) {
+    if (Test-Path $yasb) {
         Get-Process yasb -ErrorAction SilentlyContinue | Stop-Process -Force
-        [void](Invoke-Native $yasbc @('enable-autostart'))
-        [void](Invoke-Native $yasbc @('start'))
-        Write-Info 'YASB running, autostart on'
+        Register-SignInTask 'Omadows YASB' $yasb '' 'Starts the YASB top bar when you sign in (Omadows)'
+        Start-ScheduledTask -TaskName 'Omadows YASB'
+        Write-Info 'YASB running, starts at sign-in'
     }
 }
 
