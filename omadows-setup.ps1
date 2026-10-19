@@ -1866,13 +1866,23 @@ function Ensure-Winget {
     }
 }
 
+# Installers to ask for first. winget picks PowerShell's MSIX package by default, which Windows
+# downloads by itself (it timed out on a fresh PC) and which lives outside Program Files.
+$InstallerTypes = @{ 'Microsoft.PowerShell' = 'wix' }
+
 function Install-Package([string]$Id, [string]$Scope) {
     $wgArgs = @('install', '--id', $Id, '--exact', '--source', 'winget', '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity')
     if ($Scope) { $wgArgs += @('--scope', $Scope) }
-    Write-Info "installing $Id ..."
-    $code = Invoke-Native 'winget' $wgArgs
-    # 0 = installed; 0x8A15002B / 0x8A150061 = already installed, nothing newer
-    if ($code -eq 0 -or $code -eq -1978335189 -or $code -eq -1978335135) { Write-Info "$Id ok"; return $true }
+    # a second try for downloads that time out; then winget's own choice of installer
+    $tries = if ($InstallerTypes[$Id]) { $InstallerTypes[$Id], $InstallerTypes[$Id], '' } else { '', '' }
+    for ($i = 0; $i -lt $tries.Count; $i++) {
+        if ($i) { Write-Info "$Id failed (winget exit code $code); trying again ..."; Start-Sleep -Seconds 5 }
+        else { Write-Info "installing $Id ..." }
+        $extra = if ($tries[$i]) { @('--installer-type', $tries[$i]) } else { @() }
+        $code = Invoke-Native 'winget' ($wgArgs + $extra)
+        # 0 = installed; 0x8A15002B / 0x8A150061 = already installed, nothing newer
+        if ($code -eq 0 -or $code -eq -1978335189 -or $code -eq -1978335135) { Write-Info "$Id ok"; return $true }
+    }
     Write-Warn "$Id failed (winget exit code $code)"
     return $false
 }
@@ -2843,7 +2853,10 @@ function Set-WindowsTerminal {
     Set-Prop $d 'opacity' 92
     Set-Prop $d 'useAcrylic' $true
     Set-Prop $d 'padding' '14'
-    if (-not $SkipTerminalExtras) { Set-Prop $s 'defaultProfile' '{574e775e-4f2a-5b96-ac1e-a2962a402336}' }   # PowerShell 7
+    # PowerShell 7, if its install worked (Terminal warns about a default profile that doesn't exist)
+    if (-not $SkipTerminalExtras -and ((Test-Path "$env:ProgramFiles\PowerShell\7\pwsh.exe") -or (Get-Command pwsh.exe -ErrorAction SilentlyContinue))) {
+        Set-Prop $s 'defaultProfile' '{574e775e-4f2a-5b96-ac1e-a2962a402336}'
+    }
     Write-JsonFile $path $s
 }
 
