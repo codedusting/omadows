@@ -92,8 +92,28 @@ It only accepts color values from `~/.config/omadows/theme-colors` and draws eve
 It sets Brave's theme color policy, Explorer's folder icon (`Shell Icons`), the Windhawk mods'
 settings, and keeps its files in `C:\Program Files\Omadows` and `HKLM\SOFTWARE\Omadows`.
 
-There's no uninstaller yet. `omadows.ps1 restore-folders` puts the original special folder icons
-back; the apps can be removed with winget or from Settings, and Windhawk's mods from its window.
+## Uninstall
+
+```powershell
+$env:OMADOWS_UNINSTALL = 1; irm https://raw.githubusercontent.com/codedusting/omadows/main/install.ps1 | iex
+```
+
+It asks whether to remove the apps as well; set `$env:OMADOWS_REMOVE_APPS = 1` (remove) or `0`
+(keep) first to answer in advance. With the files: `omadows-setup.ps1 -Uninstall`, plus
+`-RemoveApps` or `-KeepApps`. One administrator prompt.
+
+It removes the Windhawk mods, the theme colors task, `C:\Program Files\Omadows`,
+`HKLM\SOFTWARE\Omadows`, Brave's theme color policy, Explorer's folder icon override, the
+sign-in tasks and Start menu shortcuts, `~/.config/omadows`, the Omadows entries in Windows
+Terminal, VS Code, Obsidian and your PowerShell profiles; it puts back the special folder icons,
+the always-visible taskbar, the desktop icons and Windows' default wallpaper. The configs the
+setup replaced (komorebi, whkd, YASB, starship) come back as they were before the first install,
+and the ones that didn't exist are deleted. Running programs keep Windhawk's files open; Windows
+deletes those at the next restart, so restart once afterwards.
+
+It keeps dark mode and the accent color, long path support, the script execution policy, the
+`*.bak-<timestamp>` backups and any VS Code theme extensions a theme installed. Kept apps keep
+their settings but no longer start with Windows.
 
 ## Testing
 

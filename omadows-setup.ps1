@@ -20,13 +20,17 @@
     - Extras            PowerShell 7, starship (Omarchy's prompt), fastfetch
                         (skip them with -SkipTerminalExtras)
 
-  One line in PowerShell (see README.md), or double-click "Setup Omadows.cmd" next to it, or run it from a normal (not admin) PowerShell
-  window:
+  One line in PowerShell (see README.md), or double-click "Setup Omadows.cmd" next to it, or run
+  it from a normal (not admin) PowerShell window:
 
       powershell -ExecutionPolicy Bypass -File .\omadows-setup.ps1
 
   One UAC prompt appears for the machine-wide installs. Click Yes.
   Safe to re-run: any file it replaces is kept next to it as *.bak-<timestamp>.
+
+  To undo everything, run it with -Uninstall (add -RemoveApps or -KeepApps to answer whether the
+  apps go too; otherwise it asks). The configs it replaced come back as they were before the
+  first install.
 
   Games are never tiled: anything in a Steam, Epic, Xbox, GOG, EA, Ubisoft or Riot library or a
   X:\Games folder, plus game folders found on the PC. Gaps are 4 screen pixels on any display.
@@ -35,8 +39,13 @@
 [CmdletBinding()]
 param(
     [switch]$SkipTerminalExtras,
-    # internal: the elevated half of the script, and the account it sets things up for
+    # undo everything; -RemoveApps / -KeepApps answer whether the apps go too (otherwise it asks)
+    [switch]$Uninstall,
+    [switch]$RemoveApps,
+    [switch]$KeepApps,
+    # internal: the elevated halves of the script, and the account they set things up for
     [switch]$InstallPhase,
+    [switch]$UninstallPhase,
     [string]$UserProfile = $env:USERPROFILE,
     [string]$UserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 )
@@ -380,6 +389,7 @@ $ThemeTool = @'
     omadows.ps1 restore-folders   put back the original Desktop/Documents/... folder icons
     omadows.ps1 settings      gap size and untiled (game) folders  (Start menu: Omadows Settings)
     omadows.ps1 apply-settings    write settings.json into komorebi.json (finds games the first time)
+    omadows.ps1 refresh-explorer  drop the icons and folder previews Explorer cached (used by -Uninstall)
 
   A theme recolors the komorebi borders, the YASB bar, Windows Terminal (and with it the
   starship prompt), VS Code, Brave, Explorer's folder icons, Obsidian vaults and the Windows
@@ -1765,13 +1775,19 @@ switch ($Command) {
     'current' { if (Test-Path $StateFile) { (Get-Content $StateFile -Raw).Trim() } }
     'restore-folders' { Restore-SpecialFolders; 'Original special folder icons restored.' }
     'settings' { Show-Settings }
+    'refresh-explorer' {
+        # once Windhawk's icon mod is gone, Explorer still shows the themed icons and previews it cached
+        [Omadows.ThumbCache]::Purge("$env:SystemDrive\")
+        [Omadows.Wallpaper]::RefreshIcons()
+        [void](Invoke-Native "$env:SystemRoot\System32\ie4uinit.exe" @('-show'))
+    }
     'apply-settings' {
         $s = Read-LayoutSettings
         Write-LayoutSettings $s
         Set-LayoutSettings $s
         "Gap $($s.gap) px; untiled: " + $(if ($s.gameLibraries) { 'game libraries' } else { 'no game libraries' }) + $(if ($s.untiledFolders) { ', ' + ($s.untiledFolders -join ', ') })
     }
-    default { throw "unknown command '$Command' (pick, set, next-bg, list, current, restore-folders, settings, apply-settings)" }
+    default { throw "unknown command '$Command' (pick, set, next-bg, list, current, restore-folders, settings, apply-settings, refresh-explorer)" }
 }
 '@
 
@@ -1782,6 +1798,8 @@ switch ($Command) {
 if (-not ('Win32.Native' -as [type])) {
     Add-Type -Namespace Win32 -Name Native -MemberDefinition @'
 [DllImport("gdi32.dll", CharSet = CharSet.Unicode)] public static extern int AddFontResource(string file);
+[DllImport("gdi32.dll", CharSet = CharSet.Unicode)] public static extern bool RemoveFontResource(string file);
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool MoveFileEx(string existing, string target, int flags);
 [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam, uint flags, uint timeout, out UIntPtr result);
 [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageTimeout")] public static extern IntPtr SendMessageTimeoutText(IntPtr hWnd, uint msg, UIntPtr wParam, string lParam, uint flags, uint timeout, out UIntPtr result);
 [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool SystemParametersInfo(uint action, uint param, string value, uint flags);
@@ -1857,6 +1875,31 @@ function Install-Package([string]$Id, [string]$Scope) {
     if ($code -eq 0 -or $code -eq -1978335189 -or $code -eq -1978335135) { Write-Info "$Id ok"; return $true }
     Write-Warn "$Id failed (winget exit code $code)"
     return $false
+}
+
+# Display names to fall back on when winget no longer finds a package by its id (PowerShell 7
+# after Microsoft Update has updated it)
+$UninstallNames = @{ 'Microsoft.PowerShell' = '^PowerShell 7(\.\d+)*-(x64|x86|arm64)$' }
+
+# Returns 'removed', 'absent', 'user' (installed for the user only: winget won't remove it as
+# admin) or why it failed
+function Uninstall-Package([string]$Id, [string]$Scope) {
+    $common = @('--silent', '--disable-interactivity', '--accept-source-agreements')
+    if ($Scope) { $common += @('--scope', $Scope) }
+    $code = Invoke-Native 'winget' (@('uninstall', '--id', $Id, '--exact') + $common)
+    if ($code -eq -1978335212 -and $UninstallNames[$Id]) {
+        $arp = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        $names = @(Get-ItemProperty $arp -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match $UninstallNames[$Id] -and $_.SystemComponent -ne 1 } | ForEach-Object DisplayName | Sort-Object -Unique)
+        foreach ($n in $names) { $code = Invoke-Native 'winget' (@('uninstall', '--name', $n, '--exact') + $common); if ($code -ne 0) { break } }
+    }
+    switch ($code) {
+        0 { Write-Info "$Id removed"; return 'removed' }
+        -1978334967 { Write-Info "$Id removed; Windows finishes at the next restart"; return 'removed' }   # 0x8A150109
+        -1978335212 { return 'absent' }   # 0x8A150014: not installed
+        -1978335107 { return 'user' }     # 0x8A15007D
+    }
+    Write-Warn "$Id was not removed (winget exit code $code)"
+    return "winget exit code $code"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -2531,10 +2574,13 @@ function Install-WindhawkMods {
     if ((Get-Service windhawk -ErrorAction SilentlyContinue).Status -ne 'Running') { Start-Service windhawk -ErrorAction SilentlyContinue }
 }
 
+$MachinePackages = @('LGUG2Z.komorebi', 'LGUG2Z.whkd', 'AmN.yasb', 'RamenSoftware.Windhawk')
+$TerminalExtras = @('Microsoft.PowerShell', 'Starship.Starship', 'Fastfetch-cli.Fastfetch')
+
 function Install-MachinePackages {
     Ensure-Winget
-    $ids = @('LGUG2Z.komorebi', 'LGUG2Z.whkd', 'AmN.yasb', 'RamenSoftware.Windhawk')
-    if (-not $SkipTerminalExtras) { $ids += @('Microsoft.PowerShell', 'Starship.Starship', 'Fastfetch-cli.Fastfetch') }
+    $ids = $MachinePackages
+    if (-not $SkipTerminalExtras) { $ids += $TerminalExtras }
     $failed = @()
     foreach ($id in $ids) { if (-not (Install-Package $id)) { $failed += $id } }
     if ($failed -notcontains 'RamenSoftware.Windhawk') {
@@ -2546,6 +2592,122 @@ function Install-MachinePackages {
     try { Install-ThemeColorsTask (Join-Path $UserProfile '.config\omadows\theme-colors') $UserSid }
     catch { $failed += "theme colors task ($($_.Exception.Message))" }
     return $failed
+}
+
+# Deletes files, retrying while programs let go of them; what is still in use Windows deletes at
+# the next restart. Returns how many are left for the restart.
+function Remove-Files([string[]]$Paths, [int]$Seconds) {
+    for ($i = 0; $i -lt $Seconds * 2 -and @($Paths | Where-Object { Test-Path $_ }).Count; $i++) {
+        $Paths | Where-Object { Test-Path $_ } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 500
+    }
+    $left = @($Paths | Where-Object { Test-Path $_ })
+    foreach ($p in $left) {
+        # files first, then their folders from the deepest up (a folder goes once it's empty)
+        $items = @(Get-ChildItem $p -Recurse -Force -ErrorAction SilentlyContinue | Sort-Object { $_.FullName.Length } -Descending) + @(Get-Item $p -Force)
+        foreach ($item in $items) { [void][Win32.Native]::MoveFileEx($item.FullName, [NullString]::Value, 4) }   # MOVEFILE_DELAY_UNTIL_REBOOT
+    }
+    return $left.Count
+}
+
+# Removes the four mods the way Windhawk's window does: its service unloads a mod as soon as the
+# registry entry is gone, then the files can go
+function Uninstall-WindhawkMods {
+    $data = Join-Path $env:ProgramData 'Windhawk'
+    $hklm = [Microsoft.Win32.Registry]::LocalMachine
+    $files = @()
+    $removed = @()
+    foreach ($m in $WindhawkMods) {
+        $keyPath = "SOFTWARE\Windhawk\Engine\Mods\$($m.Id)"
+        $key = $hklm.OpenSubKey($keyPath)
+        if ($key) {
+            $key.Close()
+            $hklm.DeleteSubKeyTree($keyPath)
+            $removed += $m.Id
+            Write-Info "$($m.Id) removed"
+        }
+        # every compiled version of the mod, also ones an earlier run couldn't delete
+        foreach ($t in '32', '64', 'arm64') { $files += @(Get-ChildItem (Join-Path $data "Engine\Mods\$t") -Filter "$($m.Id)_*.dll" -ErrorAction SilentlyContinue | ForEach-Object FullName) }
+        $files += Join-Path $data "ModsSource\$($m.Id).wh.cpp"
+    }
+    # the DLLs stay locked until every program has unloaded the mod
+    $left = Remove-Files $files 10
+    if ($left) { Write-Info "$left mod file(s) still in use; Windows deletes them at the next restart" }
+    $profilePath = Join-Path $data 'userprofile.json'
+    if ($removed -and (Test-Path $profilePath)) {
+        $p = Get-Content $profilePath -Raw | ConvertFrom-Json
+        if ($p.mods) { foreach ($id in $removed) { $p.mods.PSObject.Properties.Remove($id) } }
+        [IO.File]::WriteAllText($profilePath, ($p | ConvertTo-Json -Depth 10), $Utf8NoBom)
+    }
+}
+
+# Known folders by FOLDERID, whose Icon the theme colors helper can change (it saved the originals)
+$KnownFolderIds = [ordered]@{
+    desktop = '{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}'; documents = '{FDD39AD0-238F-46AF-ADB4-6C85480369C7}'
+    downloads = '{374DE290-123F-4565-9164-39C4925E467B}'; pictures = '{33E28130-4E1E-4676-835A-98395C3BC3BB}'
+    music = '{4BD8D571-6D19-48D3-BE97-422220080E43}'; videos = '{18989B1D-99B5-455B-841C-AB7C74E4DDFC}'
+}
+
+# The elevated half of -Uninstall: everything the install put in machine-wide places
+function Uninstall-Machine {
+    $failed = @()
+    try { Uninstall-WindhawkMods } catch { $failed += "Windhawk mods ($($_.Exception.Message))" }
+    try {
+        $svc = New-Object -ComObject Schedule.Service
+        $svc.Connect()
+        try {
+            $folder = $svc.GetFolder('\Omadows')
+            foreach ($t in @($folder.GetTasks(0))) { $folder.DeleteTask($t.Name, 0) }
+            $svc.GetFolder('\').DeleteFolder('Omadows', 0)
+            Write-Info 'theme colors task removed'
+        } catch { }
+        $hklm = [Microsoft.Win32.Registry]::LocalMachine
+        $saved = $hklm.OpenSubKey('SOFTWARE\Omadows\KnownFolderIcons')
+        if ($saved) {
+            foreach ($name in $saved.GetValueNames()) {
+                if (-not $KnownFolderIds.Contains($name)) { continue }
+                $fd = $hklm.OpenSubKey("SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FolderDescriptions\$($KnownFolderIds[$name])", $true)
+                if ($fd) { $fd.SetValue('Icon', $saved.GetValue($name, $null, 'DoNotExpandEnvironmentNames'), $saved.GetValueKind($name)); $fd.Close() }
+            }
+            $saved.Close()
+        }
+        Remove-Item 'HKLM:\SOFTWARE\Omadows' -Recurse -Force -ErrorAction SilentlyContinue
+        # Explorer's folder icon, if it is still ours
+        $icons = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Icons'
+        foreach ($n in '3', '4') {
+            if ([string](Get-ItemProperty $icons -ErrorAction SilentlyContinue).$n -like "*\Omadows\icons\*") { Remove-ItemProperty $icons -Name $n }
+        }
+        Remove-ItemProperty 'HKLM:\SOFTWARE\Policies\BraveSoftware\Brave' -Name 'BrowserThemeColor', 'BrowserColorScheme' -ErrorAction SilentlyContinue
+        # its icon DLLs stay loaded until every program has noticed the icon mod is gone
+        if (Remove-Files @(Join-Path $env:ProgramFiles 'Omadows') 20) { Write-Info 'C:\Program Files\Omadows is still in use; Windows deletes it at the next restart' }
+        Write-Info 'Explorer icon, Brave policy and Program Files\Omadows removed'
+    } catch { $failed += "theme colors parts ($($_.Exception.Message))" }
+    if ($RemoveApps) {
+        Ensure-Winget
+        foreach ($id in $MachinePackages + $TerminalExtras) {
+            Write-Info "removing $id ..."
+            $r = Uninstall-Package $id
+            if ($r -eq 'user') { Write-Info "$id is installed for your user only; the main window removes it" }
+            elseif ($r -notin 'removed', 'absent') { $failed += "$id ($r)" }
+            # Windhawk's uninstaller leaves its engine and mod files behind while programs still have
+            # them loaded
+            if ($id -eq 'RamenSoftware.Windhawk' -and $r -in 'removed', 'absent' -and -not (Test-Path (Join-Path $env:ProgramFiles 'Windhawk\windhawk.exe')) -and -not (Get-Service windhawk -ErrorAction SilentlyContinue)) {
+                if (Remove-Files @((Join-Path $env:ProgramFiles 'Windhawk'), (Join-Path $env:ProgramData 'Windhawk')) 5) { Write-Info "Windhawk's leftover files are in use; Windows deletes them at the next restart" }
+            }
+        }
+    }
+    return $failed
+}
+
+if ($UninstallPhase) {
+    Write-Step 'Removing the machine-wide parts'
+    $failed = @(Uninstall-Machine)
+    if ($failed.Count) {
+        Write-Warn ('Not removed: ' + ($failed -join '; '))
+        Read-Host 'Press Enter to close this window'
+        exit 1
+    }
+    exit 0
 }
 
 if ($InstallPhase) {
@@ -2725,9 +2887,11 @@ function Set-Starship {
     }
 }
 
-function Hide-DesktopIcons {
+# Desktop icons: the desktop's "Show desktop icons" command toggles them live; without a desktop
+# window the setting takes effect at next sign-in
+function Set-DesktopIcons([bool]$Visible) {
     $adv = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
-    if ((Get-ItemProperty $adv -ErrorAction SilentlyContinue).HideIcons -eq 1) { return }
+    if (((Get-ItemProperty $adv -ErrorAction SilentlyContinue).HideIcons -eq 1) -ne $Visible) { return }
     $n = [NullString]::Value
     $view = [Win32.Native]::FindWindowEx([Win32.Native]::FindWindow('Progman', $n), [IntPtr]::Zero, 'SHELLDLL_DefView', $n)
     $w = [IntPtr]::Zero
@@ -2739,17 +2903,29 @@ function Hide-DesktopIcons {
     if ($view -ne [IntPtr]::Zero) {
         [void][Win32.Native]::SendMessage($view, 0x111, [IntPtr]0x7402, [IntPtr]::Zero)   # View > Show desktop icons
     } else {
-        Set-ItemProperty $adv -Name HideIcons -Value 1 -Type DWord   # takes effect at next sign-in
+        Set-ItemProperty $adv -Name HideIcons -Value $(if ($Visible) { 0 } else { 1 }) -Type DWord
     }
 }
 
-function Enable-TaskbarAutoHide {
+function Hide-DesktopIcons { Set-DesktopIcons $false }
+
+function Set-TaskbarAutoHide([bool]$AutoHide) {
+    # the saved setting Explorer starts with (bit 0 of byte 8), so it survives Explorer restarting...
+    $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StuckRects3'
+    $saved = (Get-ItemProperty $key -ErrorAction SilentlyContinue).Settings
+    if ($saved -and $saved.Length -gt 8) {
+        $saved[8] = if ($AutoHide) { $saved[8] -bor 1 } else { $saved[8] -band 0xFE }
+        Set-ItemProperty $key -Name Settings -Value $saved -Type Binary
+    }
+    # ...and the running taskbar
     $abd = New-Object Win32.Native+APPBARDATA
     $abd.cbSize = [Runtime.InteropServices.Marshal]::SizeOf($abd)
     $abd.hWnd = [Win32.Native]::FindWindow('Shell_TrayWnd', [NullString]::Value)
-    $abd.lParam = [IntPtr]1   # ABS_AUTOHIDE
+    $abd.lParam = [IntPtr]$(if ($AutoHide) { 1 } else { 2 })   # ABS_AUTOHIDE / ABS_ALWAYSONTOP
     [void][Win32.Native]::SHAppBarMessage(0x0A, [ref]$abd)   # ABM_SETSTATE
 }
+
+function Enable-TaskbarAutoHide { Set-TaskbarAutoHide $true }
 
 # komorebi (with whkd) and YASB start from sign-in tasks: Windows holds back Startup-folder and
 # Run-key apps until the desktop has gone idle, which can take minutes; sign-in tasks start at once
@@ -2796,9 +2972,205 @@ function Start-Desktop {
     }
 }
 
+# Configs the setup replaces, saved once before the first install so -Uninstall can put them back
+$Originals = @('komorebi.json', 'applications.json', '.config\whkdrc', '.config\yasb\config.yaml', '.config\yasb\styles.css', '.config\starship.toml')
+$OriginalsDir = Join-Path $env:USERPROFILE '.config\omadows\originals'
+
+function Save-Originals {
+    if (Test-Path $OriginalsDir) { return }
+    New-Item -ItemType Directory -Force $OriginalsDir | Out-Null
+    # installed before originals were kept: these files are Omadows' own
+    if (Test-Path (Join-Path $env:USERPROFILE '.config\omadows\omadows.ps1')) { return }
+    foreach ($rel in $Originals) {
+        $p = Join-Path $env:USERPROFILE $rel
+        if (-not (Test-Path $p)) { continue }
+        $dst = Join-Path $OriginalsDir $rel
+        New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
+        Copy-Item $p $dst
+    }
+}
+
+# ---------------------------------------------------------------------------------------------
+# Uninstall (-Uninstall)
+# ---------------------------------------------------------------------------------------------
+
+function Stop-Desktop {
+    $komorebic = Join-Path $env:ProgramFiles 'komorebi\bin\komorebic.exe'
+    # stopping komorebi shows the windows it had hidden on other workspaces again
+    if ((Test-Path $komorebic) -and (Get-Process komorebi -ErrorAction SilentlyContinue)) { [void](Invoke-Native $komorebic @('stop', '--whkd')) }
+    Get-Process yasb, whkd -ErrorAction SilentlyContinue | Stop-Process -Force
+    foreach ($t in 'Omadows komorebi', 'Omadows YASB') { Unregister-ScheduledTask -TaskName $t -Confirm:$false -ErrorAction SilentlyContinue }
+    $programs = [Environment]::GetFolderPath('Programs')
+    foreach ($s in 'Omadows Theme', 'Omadows Next Wallpaper', 'Omadows Settings') { Remove-Item (Join-Path $programs "$s.lnk") -ErrorAction SilentlyContinue }
+}
+
+function Reset-WindowsTerminal([bool]$Apps) {
+    $path = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+    if (-not (Test-Path $path)) { return }
+    $raw = Get-Content $path -Raw
+    try { $s = $raw | ConvertFrom-Json } catch { $s = (($raw -split "`r?`n") | Where-Object { $_ -notmatch '^\s*//' }) -join "`n" | ConvertFrom-Json }
+    if ($s.schemes) { $s.schemes = @($s.schemes | Where-Object { $_.name -ne 'Omadows' }) }
+    if ($s.themes) { $s.themes = @($s.themes | Where-Object { $_.name -ne 'Omadows' }) }
+    if ($s.theme -eq 'Omadows') { $s.PSObject.Properties.Remove('theme') }
+    $d = $s.profiles.defaults
+    if ($d) {
+        # only the values the setup and the theme switcher set
+        if ($d.colorScheme -eq 'Omadows') { $d.PSObject.Properties.Remove('colorScheme') }
+        if ($d.font -and $d.font.face -eq 'JetBrainsMono Nerd Font Propo') { $d.PSObject.Properties.Remove('font') }
+        if ($d.opacity -eq 92) { $d.PSObject.Properties.Remove('opacity') }
+        if ($d.useAcrylic -eq $true) { $d.PSObject.Properties.Remove('useAcrylic') }
+        if ($d.padding -eq '14') { $d.PSObject.Properties.Remove('padding') }
+    }
+    # without PowerShell 7, open Windows PowerShell
+    if ($Apps -and $s.defaultProfile -eq '{574e775e-4f2a-5b96-ac1e-a2962a402336}') { $s.defaultProfile = '{61c54bbd-c2c6-5271-96e7-009a87ff44bf}' }
+    Write-JsonFile $path $s
+}
+
+function Reset-VsCode {
+    $ext = Join-Path $env:USERPROFILE '.vscode\extensions'
+    Remove-Item (Join-Path $ext 'omadows-theme') -Recurse -Force -ErrorAction SilentlyContinue
+    $registry = Join-Path $ext 'extensions.json'
+    if (Test-Path $registry) {
+        $parsed = [IO.File]::ReadAllText($registry) | ConvertFrom-Json
+        $entries = @(@(foreach ($e in $parsed) { $e }) | Where-Object { $_.identifier.id -ne 'local.omadows-theme' })
+        [IO.File]::WriteAllText($registry, (ConvertTo-Json -InputObject ([object[]]$entries) -Depth 16 -Compress), $Utf8NoBom)
+    }
+    # the color theme goes back to VS Code's default if a theme switch set it
+    $settings = Join-Path $env:APPDATA 'Code\User\settings.json'
+    if (-not (Test-Path $settings)) { return }
+    $ours = @('Omadows') + @(Get-ChildItem (Join-Path $env:USERPROFILE '.config\omadows\themes') -Recurse -Filter vscode.json -ErrorAction SilentlyContinue |
+        ForEach-Object { try { (Get-Content $_.FullName -Raw | ConvertFrom-Json).name } catch { } })
+    $text = [IO.File]::ReadAllText($settings)
+    $m = [regex]::Match($text, '\s*"workbench\.colorTheme"\s*:\s*"([^"]*)"\s*,?')
+    if ($m.Success -and $ours -contains $m.Groups[1].Value) { [IO.File]::WriteAllText($settings, $text.Remove($m.Index, $m.Length), $Utf8NoBom) }
+}
+
+function Reset-Obsidian {
+    $registry = Join-Path $env:APPDATA 'obsidian\obsidian.json'
+    if (-not (Test-Path $registry)) { return }
+    foreach ($v in (Get-Content $registry -Raw | ConvertFrom-Json).vaults.PSObject.Properties.Value) {
+        Remove-Item (Join-Path $v.path '.obsidian\themes\Omadows') -Recurse -Force -ErrorAction SilentlyContinue
+        $a = Join-Path $v.path '.obsidian\appearance.json'
+        if (Test-Path $a) {
+            $j = Get-Content $a -Raw | ConvertFrom-Json
+            if ($j.cssTheme -eq 'Omadows') { $j.cssTheme = ''; [IO.File]::WriteAllText($a, ($j | ConvertTo-Json -Depth 8), $Utf8NoBom) }
+        }
+    }
+}
+
+function Reset-Profiles {
+    $docs = [Environment]::GetFolderPath('MyDocuments')
+    foreach ($p in "$docs\PowerShell\Microsoft.PowerShell_profile.ps1", "$docs\WindowsPowerShell\Microsoft.PowerShell_profile.ps1") {
+        if (-not (Test-Path $p)) { continue }
+        $lines = @([IO.File]::ReadAllLines($p) | Where-Object { $_.Trim() -ne 'Invoke-Expression (&starship init powershell)' })
+        # a profile that only held the starship line was created by the setup
+        if (-not ($lines | Where-Object { $_.Trim() })) { Remove-Item $p -Force } else { [IO.File]::WriteAllLines($p, [string[]]$lines) }
+    }
+}
+
+function Restore-Originals {
+    foreach ($rel in $Originals) {
+        $p = Join-Path $env:USERPROFILE $rel
+        $saved = Join-Path $OriginalsDir $rel
+        if (Test-Path $saved) { Copy-Item $saved $p -Force; Write-Info "restored $rel" }
+        elseif (Test-Path $p) { Remove-Item $p -Force; Write-Info "removed $rel" }
+    }
+    $yasb = Join-Path $env:USERPROFILE '.config\yasb'
+    if ((Test-Path $yasb) -and -not (Get-ChildItem $yasb -Force)) { Remove-Item $yasb }
+}
+
+function Reset-Desktop {
+    Set-TaskbarAutoHide $false
+    Set-DesktopIcons $true
+    # the wallpaper slideshow points into ~/.config/omadows, which goes away
+    $default = Join-Path $env:SystemRoot 'Web\Wallpaper\Windows\img0.jpg'
+    if (Test-Path $default) { [void][Win32.Native]::SystemParametersInfo(0x14, 0, $default, 3) }   # SPI_SETDESKWALLPAPER
+}
+
+# Explorer keeps some of the removed mods' styling (a black top bar) until it restarts
+function Restart-Explorer {
+    $old = @(Get-Process explorer -ErrorAction SilentlyContinue | ForEach-Object Id)
+    Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+    # Windows restarts the shell by itself; start it if it didn't
+    $deadline = (Get-Date).AddSeconds(15)
+    do { Start-Sleep -Milliseconds 500; $new = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $old -notcontains $_.Id } } while (-not $new -and (Get-Date) -lt $deadline)
+    if (-not $new) { Start-Process explorer.exe }
+}
+
+function Remove-UserApps {
+    [void](Uninstall-Package 'Microsoft.PowerToys')
+    # what winget installed for this user only, which the admin window can't remove
+    foreach ($id in $MachinePackages + $TerminalExtras) { [void](Uninstall-Package $id 'user') }
+    $fontDir = "$env:LOCALAPPDATA\Microsoft\Windows\Fonts"
+    $reg = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Fonts'
+    $left = 0
+    foreach ($f in Get-ChildItem $fontDir -Filter 'JetBrainsMonoNerdFont*.ttf' -ErrorAction SilentlyContinue) {
+        [void][Win32.Native]::RemoveFontResource($f.FullName)
+        Remove-ItemProperty $reg -Name ($f.BaseName + ' (TrueType)') -ErrorAction SilentlyContinue
+        Remove-Item $f.FullName -Force -ErrorAction SilentlyContinue
+        if (Test-Path $f.FullName) { $left++ }
+    }
+    $r = [UIntPtr]::Zero
+    [void][Win32.Native]::SendMessageTimeout([IntPtr]0xffff, 0x1D, [UIntPtr]::Zero, [IntPtr]::Zero, 2, 1000, [ref]$r)   # WM_FONTCHANGE
+    if ($left) { Write-Warn "$left font files are in use; they go away after a restart" }
+}
+
+function Invoke-Uninstall {
+    Write-Host 'Omadows: uninstall' -ForegroundColor Magenta
+    $apps = if ($RemoveApps) { $true } elseif ($KeepApps) { $false } else {
+        (Read-Host 'Also remove the apps it installed (komorebi, whkd, YASB, Windhawk, PowerToys, PowerShell 7, starship, fastfetch, JetBrainsMono Nerd Font)? [y/N]') -match '^(y|yes)$'
+    }
+    $tool = Join-Path $env:USERPROFILE '.config\omadows\omadows.ps1'
+    $runTool = { param($cmd) if (Test-Path $tool) { if ((Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $tool, $cmd)) -ne 0) { throw "omadows.ps1 $cmd failed" } } }
+
+    Invoke-Step 'Stop komorebi, whkd and YASB; remove their sign-in tasks and the Start menu shortcuts' { Stop-Desktop }
+    Invoke-Step 'Desktop/Documents/Downloads/Pictures/Music/Videos icons' { & $runTool 'restore-folders' }
+    Invoke-Step 'Machine-wide parts (one UAC prompt)' {
+        if (Test-Admin) {
+            $script:RemoveApps = [switch]$apps
+            $failed = @(Uninstall-Machine)
+            if ($failed.Count) { throw ('not removed: ' + ($failed -join '; ')) }
+        } else {
+            if (-not $PSCommandPath) { throw 'save this script to a file and run it with -File' }
+            $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -UninstallPhase -UserProfile `"$UserProfile`" -UserSid $UserSid"
+            if ($apps) { $argList += ' -RemoveApps' }
+            try { $p = Start-Process powershell.exe -Verb RunAs -ArgumentList $argList -Wait -PassThru }
+            catch { throw 'the UAC prompt was declined; run the uninstall again and click Yes' }
+            if ($p.ExitCode -ne 0) { throw 'some machine-wide parts were not removed (see the admin window)' }
+        }
+        Update-SessionPath
+    }
+    Invoke-Step 'Explorer icons and folder previews' { & $runTool 'refresh-explorer' }
+    Invoke-Step 'Windows Terminal, VS Code, Obsidian and PowerShell profiles' { Reset-WindowsTerminal $apps; Reset-VsCode; Reset-Obsidian; Reset-Profiles }
+    Invoke-Step 'komorebi, whkd, YASB and starship configs' { Restore-Originals }
+    Invoke-Step 'Taskbar, desktop icons and wallpaper' { Reset-Desktop }
+    Invoke-Step 'Restart Explorer (open folder windows close)' { Restart-Explorer }
+    if ($apps) { Invoke-Step 'PowerToys and the JetBrainsMono Nerd Font' { Remove-UserApps } }
+    Invoke-Step 'Omadows files (~/.config/omadows)' {
+        $dir = Join-Path $env:USERPROFILE '.config\omadows'
+        if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
+    }
+
+    Write-Host ''
+    if ($Failures.Count) {
+        Write-Host ('Finished with problems in: ' + ($Failures -join '; ')) -ForegroundColor Yellow
+        Write-Host 'Run the uninstall again after fixing the cause; finished steps are skipped safely.' -ForegroundColor Yellow
+    } else {
+        Write-Host 'Omadows removed.' -ForegroundColor Green
+    }
+    $pending = [string[]](Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -ErrorAction SilentlyContinue).PendingFileRenameOperations
+    if ($pending -match '\\(Windhawk|Omadows)(\\|$)') { Write-Host 'Restart Windows once to delete the files programs still had open.' }
+    $kept = @('dark mode and the accent color', 'long path support', 'your script execution policy', 'backups named *.bak-<timestamp>', 'VS Code theme extensions a theme installed')
+    if (-not $apps) { $kept = @('the apps (komorebi, whkd, YASB, Windhawk, PowerToys, PowerShell 7, starship, fastfetch, the Nerd Font) and PowerToys'' settings; they no longer start with Windows') + $kept }
+    Write-Host ("`nKept: " + ($kept -join '; ') + '.')
+    exit $(if ($Failures.Count) { 1 } else { 0 })
+}
+
 # ---------------------------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------------------------
+
+if ($Uninstall) { Invoke-Uninstall }
 
 Write-Host 'Omadows: Omarchy-style Windows setup' -ForegroundColor Magenta
 
@@ -2819,6 +3191,7 @@ Invoke-Step 'Machine-wide installs (one UAC prompt)' {
     Update-SessionPath
 }
 
+Invoke-Step 'Keep your current configs (for -Uninstall)' { Save-Originals }
 Invoke-Step 'PowerToys (per-user, no admin)' { if (-not (Install-Package 'Microsoft.PowerToys' 'user')) { throw 'install failed' } }
 Invoke-Step 'JetBrainsMono Nerd Font (per-user)' { Install-NerdFont }
 Invoke-Step 'Dark mode' { Set-DarkMode }
