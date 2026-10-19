@@ -1902,6 +1902,29 @@ function Uninstall-Package([string]$Id, [string]$Scope) {
     return "winget exit code $code"
 }
 
+# Drops PATH entries into the removed apps' folders (starship's uninstaller leaves its own)
+function Remove-StalePathEntries([string]$Scope) {
+    $dirs = @('komorebi', 'whkd', 'YASB', 'starship', 'PowerShell\7', 'Windhawk') | ForEach-Object { Join-Path $env:ProgramFiles $_ }
+    $key = if ($Scope -eq 'Machine') { [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $true) }
+           else { [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true) }
+    if (-not $key) { return }
+    try {
+        $raw = [string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+        if (-not $raw) { return }
+        $entries = $raw -split ';'
+        $keep = @($entries | Where-Object {
+            $full = [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\')
+            $ours = @($dirs | Where-Object { $full -eq $_ -or $full -like "$_\*" }).Count
+            -not ($full -and $ours -and -not (Test-Path $full))
+        })
+        if ($keep.Count -eq $entries.Count) { return }
+        $key.SetValue('Path', ($keep -join ';'), $key.GetValueKind('Path'))
+        $r = [UIntPtr]::Zero
+        [void][Win32.Native]::SendMessageTimeoutText([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$r)   # WM_SETTINGCHANGE
+        Write-Info "removed $($entries.Count - $keep.Count) PATH entries of removed apps"
+    } finally { $key.Close() }
+}
+
 # ---------------------------------------------------------------------------------------------
 # Elevated half: machine-wide packages
 # ---------------------------------------------------------------------------------------------
@@ -2695,6 +2718,13 @@ function Uninstall-Machine {
                 if (Remove-Files @((Join-Path $env:ProgramFiles 'Windhawk'), (Join-Path $env:ProgramData 'Windhawk')) 5) { Write-Info "Windhawk's leftover files are in use; Windows deletes them at the next restart" }
             }
         }
+        Remove-StalePathEntries 'Machine'
+        # the installer options PowerShell 7's setup remembers, once no PowerShell 7 is left
+        if (-not (Get-ChildItem (Join-Path $env:ProgramFiles 'PowerShell') -Filter pwsh.exe -Recurse -Depth 1 -ErrorAction SilentlyContinue)) {
+            Remove-Item 'HKLM:\SOFTWARE\Microsoft\PowerShellCore\InstallerProperties' -Recurse -Force -ErrorAction SilentlyContinue
+            $pc = Get-Item 'HKLM:\SOFTWARE\Microsoft\PowerShellCore' -ErrorAction SilentlyContinue
+            if ($pc -and $pc.SubKeyCount -eq 0 -and $pc.ValueCount -eq 0) { Remove-Item $pc.PSPath -Force }
+        }
     }
     return $failed
 }
@@ -2973,7 +3003,8 @@ function Start-Desktop {
 }
 
 # Configs the setup replaces, saved once before the first install so -Uninstall can put them back
-$Originals = @('komorebi.json', 'applications.json', '.config\whkdrc', '.config\yasb\config.yaml', '.config\yasb\styles.css', '.config\starship.toml')
+# (komorebi's quickstart also writes komorebi.bar.json, which the setup leaves as it is)
+$Originals = @('komorebi.json', 'komorebi.bar.json', 'applications.json', '.config\whkdrc', '.config\yasb\config.yaml', '.config\yasb\styles.css', '.config\starship.toml')
 $OriginalsDir = Join-Path $env:USERPROFILE '.config\omadows\originals'
 
 function Save-Originals {
@@ -3085,6 +3116,13 @@ function Reset-Desktop {
     # the wallpaper slideshow points into ~/.config/omadows, which goes away
     $default = Join-Path $env:SystemRoot 'Web\Wallpaper\Windows\img0.jpg'
     if (Test-Path $default) { [void][Win32.Native]::SystemParametersInfo(0x14, 0, $default, 3) }   # SPI_SETDESKWALLPAPER
+    # Settings would still show "Slideshow" (2) instead of "Picture" (0)
+    $wp = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Wallpapers'
+    if ((Get-ItemProperty $wp -ErrorAction SilentlyContinue).BackgroundType -eq 2) { Set-ItemProperty $wp -Name BackgroundType -Value 0 -Type DWord }
+    # the theme switcher's slideshow options (shuffle, 5 minutes) back to Windows' defaults
+    $ss = 'HKCU:\Control Panel\Personalization\Desktop Slideshow'
+    $o = Get-ItemProperty $ss -ErrorAction SilentlyContinue
+    if ($o.Interval -eq 300000 -and $o.Shuffle -eq 1) { Remove-ItemProperty $ss -Name Interval, Shuffle -ErrorAction SilentlyContinue }
 }
 
 # Explorer keeps some of the removed mods' styling (a black top bar) until it restarts
@@ -3101,6 +3139,20 @@ function Remove-UserApps {
     [void](Uninstall-Package 'Microsoft.PowerToys')
     # what winget installed for this user only, which the admin window can't remove
     foreach ($id in $MachinePackages + $TerminalExtras) { [void](Uninstall-Package $id 'user') }
+    Remove-StalePathEntries 'User'
+    # settings, logs and caches the uninstallers leave in your profile, once the app is gone
+    $leftovers = @(
+        @{ App = @("$env:ProgramFiles\komorebi\bin\komorebi.exe"); Paths = @("$env:LOCALAPPDATA\komorebi") }
+        @{ App = @("$env:ProgramFiles\YASB\yasb.exe"); Paths = @("$env:LOCALAPPDATA\YASB", "$env:USERPROFILE\.config\yasb\yasb.log") }
+        @{ App = @("$env:LOCALAPPDATA\PowerToys\PowerToys.exe", "$env:ProgramFiles\PowerToys\PowerToys.exe"); Paths = @("$env:LOCALAPPDATA\Microsoft\PowerToys", 'HKCU:\Software\Microsoft\PowerToys') }
+        @{ App = @("$env:ProgramFiles\PowerShell\7\pwsh.exe"); Paths = @("$env:LOCALAPPDATA\Microsoft\PowerShell") }
+    )
+    foreach ($l in $leftovers) {
+        if (@($l.App | Where-Object { Test-Path $_ }).Count) { continue }
+        $l.Paths | Where-Object { Test-Path $_ } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $yasb = Join-Path $env:USERPROFILE '.config\yasb'
+    if ((Test-Path $yasb) -and -not (Get-ChildItem $yasb -Force)) { Remove-Item $yasb }
     $fontDir = "$env:LOCALAPPDATA\Microsoft\Windows\Fonts"
     $reg = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Fonts'
     $left = 0

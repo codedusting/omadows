@@ -99,15 +99,16 @@ $env:OMADOWS_UNINSTALL = 1; irm https://raw.githubusercontent.com/codedusting/om
 ```
 
 It asks whether to remove the apps as well; set `$env:OMADOWS_REMOVE_APPS = 1` (remove) or `0`
-(keep) first to answer in advance. With the files: `omadows-setup.ps1 -Uninstall`, plus
+(keep) first to answer in advance. Removed apps also lose the settings, logs and caches their
+uninstallers leave behind, and their PATH entries. With the files: `omadows-setup.ps1 -Uninstall`, plus
 `-RemoveApps` or `-KeepApps`. One administrator prompt.
 
 It removes the Windhawk mods, the theme colors task, `C:\Program Files\Omadows`,
 `HKLM\SOFTWARE\Omadows`, Brave's theme color policy, Explorer's folder icon override, the
 sign-in tasks and Start menu shortcuts, `~/.config/omadows`, the Omadows entries in Windows
 Terminal, VS Code, Obsidian and your PowerShell profiles; it puts back the special folder icons,
-the always-visible taskbar, the desktop icons and Windows' default wallpaper. The configs the
-setup replaced (komorebi, whkd, YASB, starship) come back as they were before the first install,
+the always-visible taskbar, the desktop icons, Windows' default wallpaper and slideshow options.
+The configs the setup replaced (komorebi, whkd, YASB, starship) come back as they were before the first install,
 and the ones that didn't exist are deleted. Running programs keep Windhawk's files open; Windows
 deletes those at the next restart, so restart once afterwards.
 
