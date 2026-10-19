@@ -1815,8 +1815,19 @@ function Write-Step([string]$Message) { Write-Host "`n==> $Message" -ForegroundC
 function Write-Info([string]$Message) { Write-Host "    $Message" -ForegroundColor Gray }
 function Write-Warn([string]$Message) { Write-Host "    ! $Message" -ForegroundColor Yellow }
 
+# Runs a block of Invoke-Step calls, counting them first so each step shows where it is ([3/13])
+function Invoke-Steps([scriptblock]$Steps) {
+    $script:StepTotal = 0
+    $script:CountingSteps = $true
+    try { & $Steps } finally { $script:CountingSteps = $false }
+    $script:StepNo = 0
+    try { & $Steps } finally { $script:StepTotal = 0 }
+}
+
 function Invoke-Step([string]$Name, [scriptblock]$Body) {
-    Write-Step $Name
+    if ($script:CountingSteps) { $script:StepTotal++; return }
+    $script:StepNo++
+    Write-Step $(if ($script:StepTotal) { "[$($script:StepNo)/$($script:StepTotal)] $Name" } else { $Name })
     try { & $Body } catch { Write-Warn "$Name failed: $($_.Exception.Message)"; $Failures.Add($Name) }
 }
 
@@ -1875,11 +1886,13 @@ function Install-Package([string]$Id, [string]$Scope) {
     if ($Scope) { $wgArgs += @('--scope', $Scope) }
     # a second try for downloads that time out; then winget's own choice of installer
     $tries = if ($InstallerTypes[$Id]) { $InstallerTypes[$Id], $InstallerTypes[$Id], '' } else { '', '' }
+    $winget = (Get-Command winget).Source
     for ($i = 0; $i -lt $tries.Count; $i++) {
         if ($i) { Write-Info "$Id failed (winget exit code $code); trying again ..."; Start-Sleep -Seconds 5 }
         else { Write-Info "installing $Id ..." }
         $extra = if ($tries[$i]) { @('--installer-type', $tries[$i]) } else { @() }
-        $code = Invoke-Native 'winget' ($wgArgs + $extra)
+        # straight to this window, so winget's download progress shows
+        $code = (Start-Process $winget -ArgumentList ($wgArgs + $extra) -NoNewWindow -Wait -PassThru).ExitCode
         # 0 = installed; 0x8A15002B / 0x8A150061 = already installed, nothing newer
         if ($code -eq 0 -or $code -eq -1978335189 -or $code -eq -1978335135) { Write-Info "$Id ok"; return $true }
     }
@@ -2615,7 +2628,12 @@ function Install-MachinePackages {
     $ids = $MachinePackages
     if (-not $SkipTerminalExtras) { $ids += $TerminalExtras }
     $failed = @()
-    foreach ($id in $ids) { if (-not (Install-Package $id)) { $failed += $id } }
+    $total = $ids.Count + 1
+    for ($i = 0; $i -lt $ids.Count; $i++) {
+        Write-Step "[$($i + 1)/$total] $($ids[$i])"
+        if (-not (Install-Package $ids[$i])) { $failed += $ids[$i] }
+    }
+    Write-Step "[$total/$total] Windhawk mods, long paths, theme colors task"
     if ($failed -notcontains 'RamenSoftware.Windhawk') {
         try { Install-WindhawkMods } catch { $failed += "Windhawk mods ($($_.Exception.Message))" }
     }
@@ -2751,7 +2769,7 @@ if ($UninstallPhase) {
 }
 
 if ($InstallPhase) {
-    Write-Step 'Installing machine-wide packages'
+    Write-Host 'Omadows: machine-wide installs' -ForegroundColor Magenta
     $failed = @(Install-MachinePackages)
     if ($failed.Count) {
         Write-Warn ('These packages failed: ' + ($failed -join ', '))
@@ -2865,8 +2883,9 @@ function Set-Komorebi {
     if (-not (Test-Path $komorebic)) { throw 'komorebi is not installed' }
     Backup-File "$env:USERPROFILE\komorebi.json"
     Backup-File "$env:USERPROFILE\.config\whkdrc"
-    # quickstart fetches applications.json (community per-app rules) and writes example configs we replace
-    [void](Invoke-Native $komorebic @('quickstart'))
+    # applications.json: the community's per-app rules. (quickstart would also fetch it, but asks
+    # before overwriting existing configs and so hung on a second run.)
+    [void](Invoke-Native $komorebic @('fetch-app-specific-configuration'))
     if (-not (Test-Path "$env:USERPROFILE\applications.json")) { Write-Warn 'applications.json was not downloaded; some apps may tile oddly' }
     Write-TextFile "$env:USERPROFILE\komorebi.json" $KomorebiJson -NoBackup
     Write-TextFile "$env:USERPROFILE\.config\whkdrc" $Whkdrc -NoBackup
@@ -3016,7 +3035,7 @@ function Start-Desktop {
 }
 
 # Configs the setup replaces, saved once before the first install so -Uninstall can put them back
-# (komorebi's quickstart also writes komorebi.bar.json, which the setup leaves as it is)
+# (earlier versions ran komorebi's quickstart, which also wrote komorebi.bar.json)
 $Originals = @('komorebi.json', 'komorebi.bar.json', 'applications.json', '.config\whkdrc', '.config\yasb\config.yaml', '.config\yasb\styles.css', '.config\starship.toml')
 $OriginalsDir = Join-Path $env:USERPROFILE '.config\omadows\originals'
 
@@ -3188,32 +3207,34 @@ function Invoke-Uninstall {
     $tool = Join-Path $env:USERPROFILE '.config\omadows\omadows.ps1'
     $runTool = { param($cmd) if (Test-Path $tool) { if ((Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $tool, $cmd)) -ne 0) { throw "omadows.ps1 $cmd failed" } } }
 
-    Invoke-Step 'Stop komorebi, whkd and YASB; remove their sign-in tasks and the Start menu shortcuts' { Stop-Desktop }
-    Invoke-Step 'Desktop/Documents/Downloads/Pictures/Music/Videos icons' { & $runTool 'restore-folders' }
-    Invoke-Step 'Machine-wide parts (one UAC prompt)' {
-        if (Test-Admin) {
-            $script:RemoveApps = [switch]$apps
-            $failed = @(Uninstall-Machine)
-            if ($failed.Count) { throw ('not removed: ' + ($failed -join '; ')) }
-        } else {
-            if (-not $PSCommandPath) { throw 'save this script to a file and run it with -File' }
-            $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -UninstallPhase -UserProfile `"$UserProfile`" -UserSid $UserSid"
-            if ($apps) { $argList += ' -RemoveApps' }
-            try { $p = Start-Process powershell.exe -Verb RunAs -ArgumentList $argList -Wait -PassThru }
-            catch { throw 'the UAC prompt was declined; run the uninstall again and click Yes' }
-            if ($p.ExitCode -ne 0) { throw 'some machine-wide parts were not removed (see the admin window)' }
+    Invoke-Steps {
+        Invoke-Step 'Stop komorebi, whkd and YASB; remove their sign-in tasks and the Start menu shortcuts' { Stop-Desktop }
+        Invoke-Step 'Desktop/Documents/Downloads/Pictures/Music/Videos icons' { & $runTool 'restore-folders' }
+        Invoke-Step 'Machine-wide parts (one UAC prompt)' {
+            if (Test-Admin) {
+                $script:RemoveApps = [switch]$apps
+                $failed = @(Uninstall-Machine)
+                if ($failed.Count) { throw ('not removed: ' + ($failed -join '; ')) }
+            } else {
+                if (-not $PSCommandPath) { throw 'save this script to a file and run it with -File' }
+                $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -UninstallPhase -UserProfile `"$UserProfile`" -UserSid $UserSid"
+                if ($apps) { $argList += ' -RemoveApps' }
+                try { $p = Start-Process powershell.exe -Verb RunAs -ArgumentList $argList -Wait -PassThru }
+                catch { throw 'the UAC prompt was declined; run the uninstall again and click Yes' }
+                if ($p.ExitCode -ne 0) { throw 'some machine-wide parts were not removed (see the admin window)' }
+            }
+            Update-SessionPath
         }
-        Update-SessionPath
-    }
-    Invoke-Step 'Explorer icons and folder previews' { & $runTool 'refresh-explorer' }
-    Invoke-Step 'Windows Terminal, VS Code, Obsidian and PowerShell profiles' { Reset-WindowsTerminal $apps; Reset-VsCode; Reset-Obsidian; Reset-Profiles }
-    Invoke-Step 'komorebi, whkd, YASB and starship configs' { Restore-Originals }
-    Invoke-Step 'Taskbar, desktop icons and wallpaper' { Reset-Desktop }
-    Invoke-Step 'Restart Explorer (open folder windows close)' { Restart-Explorer }
-    if ($apps) { Invoke-Step 'PowerToys and the JetBrainsMono Nerd Font' { Remove-UserApps } }
-    Invoke-Step 'Omadows files (~/.config/omadows)' {
-        $dir = Join-Path $env:USERPROFILE '.config\omadows'
-        if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
+        Invoke-Step 'Explorer icons and folder previews' { & $runTool 'refresh-explorer' }
+        Invoke-Step 'Windows Terminal, VS Code, Obsidian and PowerShell profiles' { Reset-WindowsTerminal $apps; Reset-VsCode; Reset-Obsidian; Reset-Profiles }
+        Invoke-Step 'komorebi, whkd, YASB and starship configs' { Restore-Originals }
+        Invoke-Step 'Taskbar, desktop icons and wallpaper' { Reset-Desktop }
+        Invoke-Step 'Restart Explorer (open folder windows close)' { Restart-Explorer }
+        if ($apps) { Invoke-Step 'PowerToys and the JetBrainsMono Nerd Font' { Remove-UserApps } }
+        Invoke-Step 'Omadows files (~/.config/omadows)' {
+            $dir = Join-Path $env:USERPROFILE '.config\omadows'
+            if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
+        }
     }
 
     Write-Host ''
@@ -3239,35 +3260,38 @@ if ($Uninstall) { Invoke-Uninstall }
 
 Write-Host 'Omadows: Omarchy-style Windows setup' -ForegroundColor Magenta
 
-Invoke-Step 'Machine-wide installs (one UAC prompt)' {
-    Ensure-Winget
-    if (Test-Admin) {
-        Write-Warn 'Running as administrator: works, but apps started at the end run elevated until you sign out and back in.'
-        $failed = @(Install-MachinePackages)
-        if ($failed.Count) { throw ('failed: ' + ($failed -join ', ')) }
-    } else {
-        if (-not $PSCommandPath) { throw 'save this script to a file and run it with -File' }
-        $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -InstallPhase -UserProfile `"$UserProfile`" -UserSid $UserSid"
-        if ($SkipTerminalExtras) { $argList += ' -SkipTerminalExtras' }
-        try { $p = Start-Process powershell.exe -Verb RunAs -ArgumentList $argList -Wait -PassThru }
-        catch { throw 'the UAC prompt was declined; run the script again and click Yes' }
-        if ($p.ExitCode -ne 0) { throw 'some machine-wide installs failed (see the admin window)' }
+Invoke-Steps {
+    Invoke-Step 'Machine-wide installs (one UAC prompt)' {
+        Ensure-Winget
+        if (Test-Admin) {
+            Write-Warn 'Running as administrator: works, but apps started at the end run elevated until you sign out and back in.'
+            $failed = @(Install-MachinePackages)
+            if ($failed.Count) { throw ('failed: ' + ($failed -join ', ')) }
+        } else {
+            if (-not $PSCommandPath) { throw 'save this script to a file and run it with -File' }
+            $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -InstallPhase -UserProfile `"$UserProfile`" -UserSid $UserSid"
+            if ($SkipTerminalExtras) { $argList += ' -SkipTerminalExtras' }
+            Write-Info 'the admin window installs the apps and shows their progress (5 to 15 minutes)'
+            try { $p = Start-Process powershell.exe -Verb RunAs -ArgumentList $argList -Wait -PassThru }
+            catch { throw 'the UAC prompt was declined; run the script again and click Yes' }
+            if ($p.ExitCode -ne 0) { throw 'some machine-wide installs failed (see the admin window)' }
+        }
+        Update-SessionPath
     }
-    Update-SessionPath
-}
 
-Invoke-Step 'Keep your current configs (for -Uninstall)' { Save-Originals }
-Invoke-Step 'PowerToys (per-user, no admin)' { if (-not (Install-Package 'Microsoft.PowerToys' 'user')) { throw 'install failed' } }
-Invoke-Step 'JetBrainsMono Nerd Font (per-user)' { Install-NerdFont }
-Invoke-Step 'Dark mode' { Set-DarkMode }
-Invoke-Step 'Windows Terminal font and transparency' { Set-WindowsTerminal }
-if (-not $SkipTerminalExtras) { Invoke-Step 'starship prompt (Omarchy)' { Set-Starship } }
-Invoke-Step 'komorebi + whkd config' { Set-Komorebi }
-Invoke-Step 'YASB config' { Set-Yasb }
-Invoke-Step 'Theme switcher, Tokyo Night theme and wallpaper slideshow' { Install-ThemeSwitcher }
-Invoke-Step 'PowerToys: Win+Space launcher, FancyZones off, start with Windows' { Set-PowerToys }
-Invoke-Step 'Hide desktop icons, auto-hide taskbar' { Hide-DesktopIcons; Enable-TaskbarAutoHide }
-Invoke-Step 'Start komorebi, whkd and YASB' { Start-Desktop }
+    Invoke-Step 'Keep your current configs (for -Uninstall)' { Save-Originals }
+    Invoke-Step 'PowerToys (per-user, no admin)' { if (-not (Install-Package 'Microsoft.PowerToys' 'user')) { throw 'install failed' } }
+    Invoke-Step 'JetBrainsMono Nerd Font (per-user)' { Install-NerdFont }
+    Invoke-Step 'Dark mode' { Set-DarkMode }
+    Invoke-Step 'Windows Terminal font and transparency' { Set-WindowsTerminal }
+    if (-not $SkipTerminalExtras) { Invoke-Step 'starship prompt (Omarchy)' { Set-Starship } }
+    Invoke-Step 'komorebi + whkd config' { Set-Komorebi }
+    Invoke-Step 'YASB config' { Set-Yasb }
+    Invoke-Step 'Theme switcher, Tokyo Night theme and wallpaper slideshow' { Install-ThemeSwitcher }
+    Invoke-Step 'PowerToys: Win+Space launcher, FancyZones off, start with Windows' { Set-PowerToys }
+    Invoke-Step 'Hide desktop icons, auto-hide taskbar' { Hide-DesktopIcons; Enable-TaskbarAutoHide }
+    Invoke-Step 'Start komorebi, whkd and YASB' { Start-Desktop }
+}
 
 Write-Host ''
 if ($Failures.Count) {
