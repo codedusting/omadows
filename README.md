@@ -35,7 +35,7 @@ double-click `Setup Omadows.cmd`.
 | | |
 |---|---|
 | **Tiling** | [komorebi](https://github.com/LGUG2Z/komorebi) + whkd: BSP tiling, 9 workspaces, 4 px gaps, Omarchy's keys on the Win key |
-| **Top bar** | [YASB](https://github.com/amnweb/yasb): transparent, blurred, themed; the Windows taskbar auto-hides |
+| **Top bar** | [YASB](https://github.com/amnweb/yasb): transparent, blurred, themed, with the tray; the Windows taskbar stays hidden |
 | **Launcher** | PowerToys Command Palette on Win+Space |
 | **Themes** | All of Omarchy's themes. A switch recolors komorebi's borders, the bar, Windows Terminal, the starship prompt, VS Code, Brave, Obsidian, the Windows accent color and light/dark mode, and rotates the theme's wallpapers |
 | **Explorer** | Through [Windhawk](https://windhawk.net) mods: Yaru-style folder, drive and This PC icons in the theme's color (folder previews included), a blurred background tinted with the theme, themed drive fill bars |
@@ -53,7 +53,7 @@ Games are never tiled: anything in a Steam, Epic, Xbox, GOG, EA, Ubisoft or Riot
 | Win+W close | Win+F fullscreen | Win+T float/tile | Win+J flip layout |
 | Win+arrows focus | Win+Shift+arrows move | Win+1..9 workspace | Win+Shift+1..9 send to workspace |
 | Win+Tab next workspace | Win+- / Win+= resize | Win+Shift+P pause | Win+K all shortcuts |
-| Win+Ctrl+Shift+Space theme picker | Win+Ctrl+Space next wallpaper | | |
+| Win+Ctrl+Shift+Space theme picker | Win+Ctrl+Space next wallpaper | Alt+Esc taskbar for a moment | Alt+` taskbar on/off |
 
 ## Settings
 
@@ -71,7 +71,9 @@ skipped PowerShell 7, starship and fastfetch. Also the JetBrainsMono Nerd Font (
 
 **Windhawk mods** (installed the way Windhawk itself does, pinned to tested versions):
 Resource Redirect 1.3, Translucent Windows 1.8.2 (limited to Explorer), Windows 11 File Explorer
-Styler 1.7, Explorer Visual Tweaks Dark 1.0.1 (only the drive fill bars).
+Styler 1.7, Explorer Visual Tweaks Dark 1.0.1 (only the drive fill bars), Taskbar auto-hide fine
+tuning 2.3 (mode Never: the auto-hidden taskbar doesn't come up for the mouse, Win or
+notifications).
 
 **Your files**: `~/komorebi.json`, `~/applications.json`, `~/.config/whkdrc`,
 `~/.config/yasb/`, `~/.config/starship.toml`, `~/.config/omadows/` (the theme tool, settings,

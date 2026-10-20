@@ -4,12 +4,13 @@
 
   Recreates the Omarchy-style Windows 11 desktop in one go:
     - komorebi + whkd   tiling window manager, Omarchy keybindings on the Win (Super) key, 4 px gaps
-    - YASB              Omarchy-style transparent top bar; the Windows taskbar is set to auto-hide
+    - YASB              Omarchy-style transparent top bar; the Windows taskbar stays hidden
     - PowerToys         Command Palette launcher on Win+Space; FancyZones off (it fights tiling)
-    - Windhawk          with four mods: Resource Redirect (Yaru-style folder, drive and This PC
+    - Windhawk          with five mods: Resource Redirect (Yaru-style folder, drive and This PC
                         icons, folder previews included), Translucent Windows + Windows 11 File
-                        Explorer Styler (Explorer's background blurred and tinted with the theme)
-                        and Explorer Visual Tweaks Dark (the drive fill bars)
+                        Explorer Styler (Explorer's background blurred and tinted with the theme),
+                        Explorer Visual Tweaks Dark (the drive fill bars) and Taskbar auto-hide
+                        fine tuning (the auto-hidden taskbar never comes up)
     - Themes            omadows.ps1, Omarchy's one-key theme switching: all 23 Omarchy
                         themes recolor the borders, bar, Windows Terminal, prompt, VS Code,
                         Brave, Explorer's icons, background and fill bars, Obsidian, the Windows
@@ -2533,8 +2534,8 @@ if ($colors['special']) {
 
 # Windhawk mods, pinned to the versions tested with the theme switcher: Resource Redirect (folder,
 # drive and This PC icons), Translucent Windows + Windows 11 File Explorer Styler (Explorer's
-# tinted background; Translucent Windows only in Explorer) and Explorer Visual Tweaks Dark (only
-# the drive fill bars). Settings are the mods' defaults with these changes; the theme-dependent
+# tinted background; Translucent Windows only in Explorer), Explorer Visual Tweaks Dark (only
+# the drive fill bars) and Taskbar auto-hide fine tuning. Settings are the mods' defaults with these changes; the theme-dependent
 # ones (icon theme path, tint, bar colors) are written by the theme switcher's helper task.
 $WindhawkMods = @(
     @{ Id = 'icon-resource-redirect'; Version = '1.3'; Include = '*'; Architecture = ''
@@ -2559,6 +2560,12 @@ $WindhawkMods = @(
                               'progress.fullLeft' = 'E43060'; 'progress.fullRight' = 'ED6050'; 'progress.background' = '454545'
                               'progress.showProgressBorder' = 1; 'progress.backgroundBorder' = '323232'
                               'previewPane.matchDetailsPaneBg' = 0; 'previewPane.previewPaneBgColor' = '191919' } }
+    # the auto-hidden taskbar never comes up by itself (the bar has the tray); Alt+Esc shows it
+    # briefly and Alt+` toggles it
+    @{ Id = 'taskbar-auto-hide-keyboard-only'; Version = '2.3'; Include = 'explorer.exe'; Architecture = 'x86-64'
+       Settings = [ordered]@{ 'mode' = 'never'; 'showTemporarilyHotkey' = 'Alt+Escape'; 'toggleAlwaysShowHotkey' = 'Alt+`'
+                              'toggleAlwaysShowMouseEvent' = 'disabled'; 'showTemporarilyDurationMs' = 1000
+                              'winKeyAction' = 'defaultWindowsBehavior'; 'oldTaskbarOnWin11' = 0 } }
 )
 
 # Installs a mod the way Windhawk's own window does: its precompiled DLLs and source from
@@ -3318,7 +3325,7 @@ Invoke-Steps {
     Invoke-Step 'YASB config' { Set-Yasb }
     Invoke-Step 'Theme switcher, theme (Tokyo Night the first time) and wallpaper slideshow' { Install-ThemeSwitcher }
     Invoke-Step 'PowerToys: Win+Space launcher, FancyZones off, start with Windows' { Set-PowerToys }
-    Invoke-Step 'Hide desktop icons, auto-hide taskbar' { Hide-DesktopIcons; Enable-TaskbarAutoHide }
+    Invoke-Step 'Hide desktop icons and the taskbar' { Hide-DesktopIcons; Enable-TaskbarAutoHide }
     Invoke-Step 'Start komorebi, whkd and YASB' { Start-Desktop }
 }
 
@@ -3337,6 +3344,7 @@ Keys (Win = Super):
   Win+arrows focus          Win+Shift+arrows move    Win+1..9 workspace   Win+Shift+1..9 send to workspace
   Win+Tab next workspace    Win+-/= resize           Win+Shift+P pause    Win+K all shortcuts
   Win+Ctrl+Shift+Space theme picker                  Win+Ctrl+Space next wallpaper
+  Alt+Esc show the taskbar briefly                   Alt+` show/hide the taskbar
 
 Still to do by hand:
   - Sign out and back in once so everything starts from autostart.
