@@ -54,6 +54,7 @@ Games are never tiled: anything in a Steam, Epic, Xbox, GOG, EA, Ubisoft or Riot
 | Win+arrows focus | Win+Shift+arrows move | Win+1..9 workspace | Win+Shift+1..9 send to workspace |
 | Win+Tab next workspace | Win+- / Win+= resize | Win+Shift+P pause | Win+K all shortcuts |
 | Win+Ctrl+Shift+Space theme picker | Win+Ctrl+Space next wallpaper | Alt+Esc taskbar for a moment | Alt+` taskbar on/off |
+| Ctrl+Esc Start menu (Win alone does nothing) | | | |
 
 ## Settings
 
@@ -73,7 +74,9 @@ skipped PowerShell 7, starship and fastfetch. Also the JetBrainsMono Nerd Font (
 Resource Redirect 1.3, Translucent Windows 1.8.2 (limited to Explorer), Windows 11 File Explorer
 Styler 1.7, Explorer Visual Tweaks Dark 1.0.1 (only the drive fill bars), Taskbar auto-hide fine
 tuning 2.3 (mode Never: the auto-hidden taskbar doesn't come up for the mouse, Win or
-notifications).
+notifications), Disable Windows Shortcuts 1.3.0 (only Win on its own: it no longer opens Start;
+Win+key combinations and Ctrl+Esc work as before). That last mod works from `dwm.exe`, so the
+setup adds `dwm.exe` to Windhawk's process inclusion list; the uninstall takes it out again.
 
 **Your files**: `~/komorebi.json`, `~/applications.json`, `~/.config/whkdrc`,
 `~/.config/yasb/`, `~/.config/starship.toml`, `~/.config/omadows/` (the theme tool, settings,

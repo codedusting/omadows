@@ -6,11 +6,12 @@
     - komorebi + whkd   tiling window manager, Omarchy keybindings on the Win (Super) key, 4 px gaps
     - YASB              Omarchy-style transparent top bar; the Windows taskbar stays hidden
     - PowerToys         Command Palette launcher on Win+Space; FancyZones off (it fights tiling)
-    - Windhawk          with five mods: Resource Redirect (Yaru-style folder, drive and This PC
+    - Windhawk          with six mods: Resource Redirect (Yaru-style folder, drive and This PC
                         icons, folder previews included), Translucent Windows + Windows 11 File
                         Explorer Styler (Explorer's background blurred and tinted with the theme),
-                        Explorer Visual Tweaks Dark (the drive fill bars) and Taskbar auto-hide
-                        fine tuning (the auto-hidden taskbar never comes up)
+                        Explorer Visual Tweaks Dark (the drive fill bars), Taskbar auto-hide
+                        fine tuning (the auto-hidden taskbar never comes up) and Disable Windows
+                        Shortcuts (Win on its own doesn't open Start; Ctrl+Esc does)
     - Themes            omadows.ps1, Omarchy's one-key theme switching: all 23 Omarchy
                         themes recolor the borders, bar, Windows Terminal, prompt, VS Code,
                         Brave, Explorer's icons, background and fill bars, Obsidian, the Windows
@@ -2535,7 +2536,7 @@ if ($colors['special']) {
 # Windhawk mods, pinned to the versions tested with the theme switcher: Resource Redirect (folder,
 # drive and This PC icons), Translucent Windows + Windows 11 File Explorer Styler (Explorer's
 # tinted background; Translucent Windows only in Explorer), Explorer Visual Tweaks Dark (only
-# the drive fill bars) and Taskbar auto-hide fine tuning. Settings are the mods' defaults with these changes; the theme-dependent
+# the drive fill bars), Taskbar auto-hide fine tuning and Disable Windows Shortcuts. Settings are the mods' defaults with these changes; the theme-dependent
 # ones (icon theme path, tint, bar colors) are written by the theme switcher's helper task.
 $WindhawkMods = @(
     @{ Id = 'icon-resource-redirect'; Version = '1.3'; Include = '*'; Architecture = ''
@@ -2566,6 +2567,11 @@ $WindhawkMods = @(
        Settings = [ordered]@{ 'mode' = 'never'; 'showTemporarilyHotkey' = 'Alt+Escape'; 'toggleAlwaysShowHotkey' = 'Alt+`'
                               'toggleAlwaysShowMouseEvent' = 'disabled'; 'showTemporarilyDurationMs' = 1000
                               'winKeyAction' = 'defaultWindowsBehavior'; 'oldTaskbarOnWin11' = 0 } }
+    # Win on its own no longer opens Start (Ctrl+Esc still does); Win+key combinations are left
+    # alone. Every other shortcut stays as Windows has it: the mod reads missing settings as off.
+    # It works from dwm.exe, which Windhawk only enters when its own include list names it.
+    @{ Id = 'disable-windows-shortcuts'; Version = '1.3.0'; Include = 'explorer.exe|dwm.exe'; Architecture = ''; EngineInclude = 'dwm.exe'
+       Settings = [ordered]@{ 'StandardShortcuts.DisableWinKey' = 1 } }
 )
 
 # Installs a mod the way Windhawk's own window does: its precompiled DLLs and source from
@@ -2639,6 +2645,20 @@ function Install-WindhawkMods {
         foreach ($m in $installed) { Set-Prop $p.mods $m.Id ([pscustomobject]@{ version = $m.Version }) }
         [IO.File]::WriteAllText($profilePath, ($p | ConvertTo-Json -Depth 10), $Utf8NoBom)
     }
+    # processes Windhawk keeps out of unless its include list names them (dwm.exe); it reads the
+    # list when its service starts. What we add is noted, so -Uninstall takes only that out again.
+    $engine = 'HKLM:\SOFTWARE\Windhawk\Engine\Settings'
+    $list = @(([string](Get-ItemProperty $engine -ErrorAction SilentlyContinue).Include -split '\|') | Where-Object { $_ })
+    $added = @($WindhawkMods | ForEach-Object { $_.EngineInclude } | Where-Object { $_ -and $list -notcontains $_ })
+    if ($added) {
+        if (-not (Test-Path $engine)) { New-Item $engine -Force | Out-Null }
+        Set-ItemProperty $engine -Name Include -Value (($list + $added) -join '|') -Type String
+        New-Item 'HKLM:\SOFTWARE\Omadows' -Force | Out-Null
+        $noted = @(([string](Get-ItemProperty 'HKLM:\SOFTWARE\Omadows' -ErrorAction SilentlyContinue).WindhawkInclude -split '\|') | Where-Object { $_ })
+        Set-ItemProperty 'HKLM:\SOFTWARE\Omadows' -Name WindhawkInclude -Value ((@($noted + $added) | Select-Object -Unique) -join '|') -Type String
+        Restart-Service windhawk -Force -ErrorAction SilentlyContinue
+        Write-Info "Windhawk may now load mods into $($added -join ', ')"
+    }
     if ((Get-Service windhawk -ErrorAction SilentlyContinue).Status -ne 'Running') { Start-Service windhawk -ErrorAction SilentlyContinue }
     # mods registered before the runtime was there failed to load: turn them off and on again
     if ($runtimeAdded -and $reload) {
@@ -2709,6 +2729,16 @@ function Uninstall-WindhawkMods {
         # every compiled version of the mod, also ones an earlier run couldn't delete
         foreach ($t in '32', '64', 'arm64') { $files += @(Get-ChildItem (Join-Path $data "Engine\Mods\$t") -Filter "$($m.Id)_*.dll" -ErrorAction SilentlyContinue | ForEach-Object FullName) }
         $files += Join-Path $data "ModsSource\$($m.Id).wh.cpp"
+    }
+    # what the install added to Windhawk's include list (dwm.exe); restarting its service also
+    # lets go of the mods sooner
+    $noted = @(([string](Get-ItemProperty 'HKLM:\SOFTWARE\Omadows' -ErrorAction SilentlyContinue).WindhawkInclude -split '\|') | Where-Object { $_ })
+    $engine = 'HKLM:\SOFTWARE\Windhawk\Engine\Settings'
+    if ($noted -and (Test-Path $engine)) {
+        $list = @(([string](Get-ItemProperty $engine).Include -split '\|') | Where-Object { $_ -and $noted -notcontains $_ })
+        Set-ItemProperty $engine -Name Include -Value ($list -join '|') -Type String
+        Remove-ItemProperty 'HKLM:\SOFTWARE\Omadows' -Name WindhawkInclude -ErrorAction SilentlyContinue
+        Restart-Service windhawk -Force -ErrorAction SilentlyContinue
     }
     # the DLLs stay locked until every program has unloaded the mod
     $left = Remove-Files $files 10
@@ -3345,6 +3375,7 @@ Keys (Win = Super):
   Win+Tab next workspace    Win+-/= resize           Win+Shift+P pause    Win+K all shortcuts
   Win+Ctrl+Shift+Space theme picker                  Win+Ctrl+Space next wallpaper
   Alt+Esc show the taskbar briefly                   Alt+` show/hide the taskbar
+  Ctrl+Esc Start menu (Win on its own does nothing)
 
 Still to do by hand:
   - Sign out and back in once so everything starts from autostart.
