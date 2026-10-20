@@ -2569,11 +2569,26 @@ function Install-WindhawkMods {
     $data = Join-Path $env:ProgramData 'Windhawk'
     $hklm = [Microsoft.Win32.Registry]::LocalMachine
     $arm = $env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64'
+    # The C++ runtime every compiled mod loads. Windhawk's window copies it from its compiler the
+    # first time it opens; until then no mod can load, so copy it the same way first.
+    $triples = [ordered]@{ '32' = 'i686-w64-mingw32'; '64' = 'x86_64-w64-mingw32' }
+    if ($arm) { $triples['arm64'] = 'aarch64-w64-mingw32' }
+    $runtimeAdded = $false
+    foreach ($t in $triples.Keys) {
+        $dir = Join-Path $data "Engine\Mods\$t"
+        New-Item -ItemType Directory -Force $dir | Out-Null
+        foreach ($f in @('libc++.dll', 'libc++.whl'), @('libunwind.dll', 'libunwind.whl'), @('windhawk-mod-shim.dll', 'windhawk-mod-shim.dll')) {
+            $src = Join-Path $env:ProgramFiles "Windhawk\Compiler\$($triples[$t])\bin\$($f[0])"
+            $dst = Join-Path $dir $f[1]
+            if ((Test-Path $src) -and -not (Test-Path $dst)) { Copy-Item $src $dst; $runtimeAdded = $true }
+        }
+    }
     $installed = @()
+    $reload = @()
     foreach ($m in $WindhawkMods) {
         $keyPath = "SOFTWARE\Windhawk\Engine\Mods\$($m.Id)"
         $existing = $hklm.OpenSubKey($keyPath)
-        if ($existing) { $existing.Close(); Write-Info "$($m.Id) already installed"; continue }
+        if ($existing) { $existing.Close(); Write-Info "$($m.Id) already installed"; $reload += $keyPath; continue }
         $url = "https://mods.windhawk.net/mods/$($m.Id)/$($m.Version)"
         $file = '{0}_{1}_{2}.dll' -f $m.Id, $m.Version, (Get-Random -Minimum 100000 -Maximum 1000000)
         # 64-bit always; 32-bit (and arm64 on ARM PCs) unless the mod is x86-64 only
@@ -2618,6 +2633,13 @@ function Install-WindhawkMods {
         [IO.File]::WriteAllText($profilePath, ($p | ConvertTo-Json -Depth 10), $Utf8NoBom)
     }
     if ((Get-Service windhawk -ErrorAction SilentlyContinue).Status -ne 'Running') { Start-Service windhawk -ErrorAction SilentlyContinue }
+    # mods registered before the runtime was there failed to load: turn them off and on again
+    if ($runtimeAdded -and $reload) {
+        foreach ($k in $reload) { Set-ItemProperty "HKLM:\$k" -Name Disabled -Value 1 -Type DWord }
+        Start-Sleep -Seconds 3
+        foreach ($k in $reload) { Set-ItemProperty "HKLM:\$k" -Name Disabled -Value 0 -Type DWord }
+        Write-Info 'Windhawk mods restarted with the C++ runtime they need'
+    }
 }
 
 $MachinePackages = @('LGUG2Z.komorebi', 'LGUG2Z.whkd', 'AmN.yasb', 'RamenSoftware.Windhawk')
