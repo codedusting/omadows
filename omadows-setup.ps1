@@ -2853,9 +2853,16 @@ function Install-ThemeSwitcher {
     }
     # 4 px gaps and the untiled game folders found on this PC (settings.json, editable in Omadows Settings)
     if ((Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $tool, 'apply-settings')) -ne 0) { Write-Warn 'gap and game-folder settings were not applied; open Omadows Settings later' }
-    Write-Info 'downloading the Tokyo Night wallpapers and theming every app ...'
-    $code = Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $tool, 'set', 'tokyo-night')
+    # Tokyo Night the first time; a run again keeps the theme picked since
+    $current = Join-Path $env:USERPROFILE '.config\omadows\current-theme'
+    $theme = if (Test-Path $current) { (Get-Content $current -Raw).Trim() } else { '' }
+    if (-not $theme) { $theme = 'tokyo-night' }
+    Write-Info "downloading the $theme wallpapers and theming every app ..."
+    $code = Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $tool, 'set', $theme)
     if ($code -ne 0) { throw "the theme switcher reported problems; see $env:USERPROFILE\.config\omadows\omadows.log" }
+    # Explorer may have cached Windows' own folder icons and previews before the icon mod was
+    # ready (or while it could not load); drop them so they are drawn again in the theme's color
+    [void](Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $tool, 'refresh-explorer'))
 }
 
 function Set-DarkMode {
@@ -3309,7 +3316,7 @@ Invoke-Steps {
     if (-not $SkipTerminalExtras) { Invoke-Step 'starship prompt (Omarchy)' { Set-Starship } }
     Invoke-Step 'komorebi + whkd config' { Set-Komorebi }
     Invoke-Step 'YASB config' { Set-Yasb }
-    Invoke-Step 'Theme switcher, Tokyo Night theme and wallpaper slideshow' { Install-ThemeSwitcher }
+    Invoke-Step 'Theme switcher, theme (Tokyo Night the first time) and wallpaper slideshow' { Install-ThemeSwitcher }
     Invoke-Step 'PowerToys: Win+Space launcher, FancyZones off, start with Windows' { Set-PowerToys }
     Invoke-Step 'Hide desktop icons, auto-hide taskbar' { Hide-DesktopIcons; Enable-TaskbarAutoHide }
     Invoke-Step 'Start komorebi, whkd and YASB' { Start-Desktop }

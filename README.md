@@ -18,7 +18,8 @@ irm https://raw.githubusercontent.com/codedusting/omadows/main/install.ps1 | iex
 - One administrator prompt appears for the machine-wide installs. Click Yes.
 - It takes 10 to 20 minutes, mostly downloads. Sign out and back in once when it finishes.
 - Needs Windows 11, an internet connection and winget (App Installer, included in Windows 11).
-- Safe to run again: files it replaces are kept next to them as `*.bak-<timestamp>`.
+- Safe to run again: it keeps your current theme, and files it replaces are kept next to them as
+  `*.bak-<timestamp>`.
 
 Without PowerShell 7, starship and fastfetch:
 
